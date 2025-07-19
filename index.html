@@ -1,0 +1,757 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>3D Multiplayer Room</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            touch-action: none;
+            font-family: Arial, sans-serif;
+        }
+        #canvas {
+            display: block;
+        }
+        #controls-area {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            height: 120px;
+            background-color: rgba(0, 0, 0, 0.3);
+            pointer-events: none;
+            z-index: 10;
+        }
+        #joystick-container {
+            position: absolute;
+            left: 20px;
+            bottom: 20px;
+            width: 80px;
+            height: 80px;
+            pointer-events: auto;
+        }
+        #joystick {
+            position: absolute;
+            width: 60px;
+            height: 60px;
+            background-color: rgba(0, 0, 0, 0.3);
+            border-radius: 50%;
+            top: 10px;
+            left: 10px;
+        }
+        #joystick-handle {
+            position: absolute;
+            width: 40px;
+            height: 40px;
+            background-color: rgba(255, 255, 255, 0.7);
+            border-radius: 50%;
+            top: 10px;
+            left: 10px;
+            touch-action: none;
+        }
+        #chat-container {
+            position: absolute;
+            bottom: 20px;
+            left: 120px;
+            right: 20px;
+            display: flex;
+            flex-direction: column;
+            pointer-events: auto;
+        }
+        #chat-input {
+            padding: 10px;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+            margin-bottom: 5px;
+            background-color: rgba(255, 255, 255, 0.9);
+        }
+        #send-button {
+            padding: 10px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+        #nickname-input {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            padding: 10px;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+            background-color: rgba(255, 255, 255, 0.9);
+            z-index: 100;
+            width: 150px;
+        }
+        .player-name {
+            position: absolute;
+            color: white;
+            background-color: rgba(0, 0, 0, 0.5);
+            padding: 2px 5px;
+            border-radius: 3px;
+            font-size: 12px;
+            transform: translate(-50%, -100%);
+            white-space: nowrap;
+            pointer-events: none;
+            text-shadow: 1px 1px 2px black;
+        }
+        .player-message {
+            position: absolute;
+            color: white;
+            background-color: rgba(0, 0, 0, 0.7);
+            padding: 5px 8px;
+            border-radius: 5px;
+            font-size: 12px;
+            transform: translate(-50%, -150%);
+            max-width: 200px;
+            word-wrap: break-word;
+            text-align: center;
+            pointer-events: none;
+            text-shadow: 1px 1px 2px black;
+        }
+        #view-toggle {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            padding: 8px 12px;
+            background-color: rgba(255, 255, 255, 0.9);
+            border: 1px solid #ccc;
+            border-radius: 5px;
+            cursor: pointer;
+            z-index: 100;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="canvas"></canvas>
+    <input type="text" id="nickname-input" placeholder="Enter your nickname" maxlength="12">
+    <button id="view-toggle">1st Person</button>
+    <div id="controls-area">
+        <div id="joystick-container">
+            <div id="joystick">
+                <div id="joystick-handle"></div>
+            </div>
+        </div>
+        <div id="chat-container">
+            <input type="text" id="chat-input" placeholder="Type your message...">
+            <button id="send-button">Send</button>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/three@0.132.2/build/three.min.js"></script>
+    <script>
+        // Player data
+        const playerId = 'player_' + Math.random().toString(36).substr(2, 9);
+        let playerNickname = 'Player';
+        let playerPosition = { x: 0, y: 0.5, z: 0 };
+        let playerRotation = { x: 0, y: 0 };
+        let playerMessage = '';
+        let lastUpdateTime = 0;
+        
+        // View modes
+        const VIEW_MODES = {
+            FIRST_PERSON: 0,
+            THIRD_PERSON: 1,
+            TOP_DOWN: 2
+        };
+        let currentViewMode = VIEW_MODES.FIRST_PERSON;
+        
+        // Other players data
+        let otherPlayers = {};
+        
+        // Scene setup
+        const canvas = document.getElementById('canvas');
+        const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x87CEEB); // Sky blue
+        
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.set(0, 1.6, 0);
+        
+        // Lighting
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+        scene.add(ambientLight);
+        
+        const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+        directionalLight.position.set(1, 1, 1);
+        scene.add(directionalLight);
+        
+        const hemisphereLight = new THREE.HemisphereLight(0xffffbb, 0x080820, 0.5);
+        scene.add(hemisphereLight);
+        
+        // Floor (larger and with texture)
+        const floorGeometry = new THREE.PlaneGeometry(40, 40);
+        const floorMaterial = new THREE.MeshStandardMaterial({ 
+            color: 0x4CAF50, // Green
+            roughness: 0.8,
+            metalness: 0.2
+        });
+        const floor = new THREE.Mesh(floorGeometry, floorMaterial);
+        floor.rotation.x = -Math.PI / 2;
+        scene.add(floor);
+        
+        // Walls (higher and with texture)
+        const wallGeometry = new THREE.PlaneGeometry(40, 8);
+        const wallMaterial = new THREE.MeshStandardMaterial({ 
+            color: 0x795548, // Brown
+            roughness: 0.7,
+            metalness: 0.1
+        });
+        
+        const wall1 = new THREE.Mesh(wallGeometry, wallMaterial);
+        wall1.position.set(0, 4, -20);
+        scene.add(wall1);
+        
+        const wall2 = new THREE.Mesh(wallGeometry, wallMaterial);
+        wall2.position.set(0, 4, 20);
+        wall2.rotation.y = Math.PI;
+        scene.add(wall2);
+        
+        const wall3 = new THREE.Mesh(wallGeometry, wallMaterial);
+        wall3.position.set(-20, 4, 0);
+        wall3.rotation.y = Math.PI / 2;
+        scene.add(wall3);
+        
+        const wall4 = new THREE.Mesh(wallGeometry, wallMaterial);
+        wall4.position.set(20, 4, 0);
+        wall4.rotation.y = -Math.PI / 2;
+        scene.add(wall4);
+        
+        // Clouds
+        function createClouds() {
+            const cloudGeometry = new THREE.SphereGeometry(2, 8, 8);
+            const cloudMaterial = new THREE.MeshStandardMaterial({ 
+                color: 0xffffff,
+                transparent: true,
+                opacity: 0.8
+            });
+            
+            for (let i = 0; i < 10; i++) {
+                const cloud = new THREE.Mesh(cloudGeometry, cloudMaterial);
+                cloud.position.set(
+                    Math.random() * 60 - 30,
+                    Math.random() * 5 + 10,
+                    Math.random() * 60 - 30
+                );
+                cloud.scale.set(
+                    Math.random() * 2 + 1,
+                    Math.random() * 0.5 + 0.5,
+                    Math.random() * 2 + 1
+                );
+                scene.add(cloud);
+            }
+        }
+        createClouds();
+        
+        // Create player character with gradient color
+        function createPlayerCharacter(id, nickname, isLocalPlayer = false) {
+            const group = new THREE.Group();
+            
+            // Generate color based on ID for consistent colors
+            const hue = parseInt(id.substr(7), 16) % 360;
+            const color = new THREE.Color(`hsl(${hue}, 70%, 50%)`);
+            
+            // Body (elongated box with gradient)
+            const bodyGeometry = new THREE.BoxGeometry(0.3, 0.8, 0.2);
+            const bodyMaterial = new THREE.MeshStandardMaterial({ 
+                color: isLocalPlayer ? 0x00ff00 : color,
+                gradientMap: true
+            });
+            const body = new THREE.Mesh(bodyGeometry, bodyMaterial);
+            body.position.y = 0.4;
+            group.add(body);
+            
+            // Head (sphere with gradient)
+            const headGeometry = new THREE.SphereGeometry(0.2, 16, 16);
+            const headMaterial = new THREE.MeshStandardMaterial({ 
+                color: isLocalPlayer ? 0x00aa00 : color,
+                gradientMap: true
+            });
+            const head = new THREE.Mesh(headGeometry, headMaterial);
+            head.position.y = 0.9;
+            group.add(head);
+            
+            // Eyes
+            const eyeGeometry = new THREE.SphereGeometry(0.05, 8, 8);
+            const eyeMaterial = new THREE.MeshStandardMaterial({ color: 0x000000 });
+            
+const leftEye = new THREE.Mesh(eyeGeometry, eyeMaterial);
+leftEye.position.set(-0.07, 0.9, -0.18);  // Отрицательное Z
+group.add(leftEye);
+
+const rightEye = new THREE.Mesh(eyeGeometry, eyeMaterial);
+rightEye.position.set(0.07, 0.9, -0.18);  // Отрицательное Z
+group.add(rightEye);
+            
+            // Player name label
+            const nameLabel = document.createElement('div');
+            nameLabel.className = 'player-name';
+            nameLabel.textContent = nickname || id.substr(0, 6) + '...';
+            document.body.appendChild(nameLabel);
+            
+            // Player message bubble
+            const messageBubble = document.createElement('div');
+            messageBubble.className = 'player-message';
+            document.body.appendChild(messageBubble);
+            
+            return {
+                group,
+                nameLabel,
+                messageBubble,
+                id,
+                nickname: nickname || 'Player',
+                messageTimeout: null
+            };
+        }
+        
+        // Create local player
+        let localPlayer = createPlayerCharacter(playerId, playerNickname, true);
+        scene.add(localPlayer.group);
+        
+        // Nickname input
+        const nicknameInput = document.getElementById('nickname-input');
+        nicknameInput.addEventListener('change', function() {
+            playerNickname = this.value.trim() || 'Player';
+            localPlayer.nameLabel.textContent = playerNickname;
+            localPlayer.nickname = playerNickname;
+            updatePlayerData();
+        });
+        
+        // View toggle button
+        const viewToggle = document.getElementById('view-toggle');
+        viewToggle.addEventListener('click', function() {
+            currentViewMode = (currentViewMode + 1) % 3;
+            
+            switch(currentViewMode) {
+                case VIEW_MODES.FIRST_PERSON:
+                    viewToggle.textContent = '1st Person';
+                    break;
+                case VIEW_MODES.THIRD_PERSON:
+                    viewToggle.textContent = '3rd Person';
+                    break;
+                case VIEW_MODES.TOP_DOWN:
+                    viewToggle.textContent = 'Top Down';
+                    break;
+            }
+        });
+        
+        // Joystick controls
+        const joystickContainer = document.getElementById('joystick-container');
+        const joystickHandle = document.getElementById('joystick-handle');
+        
+        let joystickActive = false;
+        let joystickStartX = 0;
+        let joystickStartY = 0;
+        let joystickX = 0;
+        let joystickY = 0;
+        
+        joystickHandle.addEventListener('touchstart', handleJoystickStart);
+        joystickHandle.addEventListener('mousedown', handleJoystickStart);
+        document.addEventListener('touchmove', handleJoystickMove);
+        document.addEventListener('mousemove', handleJoystickMove);
+        document.addEventListener('touchend', handleJoystickEnd);
+        document.addEventListener('mouseup', handleJoystickEnd);
+        
+        function handleJoystickStart(e) {
+            e.preventDefault();
+            joystickActive = true;
+            
+            const rect = joystickContainer.getBoundingClientRect();
+            joystickStartX = rect.left + rect.width / 2;
+            joystickStartY = rect.top + rect.height / 2;
+            
+            if (e.type === 'touchstart') {
+                joystickX = e.touches[0].clientX - joystickStartX;
+                joystickY = e.touches[0].clientY - joystickStartY;
+            } else {
+                joystickX = e.clientX - joystickStartX;
+                joystickY = e.clientY - joystickStartY;
+            }
+            
+            updateJoystickPosition();
+        }
+        
+        function handleJoystickMove(e) {
+            if (!joystickActive) return;
+            e.preventDefault();
+            
+            let clientX, clientY;
+            
+            if (e.type === 'touchmove') {
+                clientX = e.touches[0].clientX;
+                clientY = e.touches[0].clientY;
+            } else {
+                clientX = e.clientX;
+                clientY = e.clientY;
+            }
+            
+            joystickX = clientX - joystickStartX;
+            joystickY = clientY - joystickStartY;
+            
+            const maxDistance = 30;
+            const distance = Math.sqrt(joystickX * joystickX + joystickY * joystickY);
+            
+            if (distance > maxDistance) {
+                const angle = Math.atan2(joystickY, joystickX);
+                joystickX = Math.cos(angle) * maxDistance;
+                joystickY = Math.sin(angle) * maxDistance;
+            }
+            
+            updateJoystickPosition();
+        }
+        
+        function updateJoystickPosition() {
+            joystickHandle.style.transform = `translate(${joystickX}px, ${joystickY}px)`;
+        }
+        
+        function handleJoystickEnd(e) {
+            joystickActive = false;
+            joystickX = 0;
+            joystickY = 0;
+            updateJoystickPosition();
+        }
+        
+        // Look controls (mouse/touch)
+        let lookActive = false;
+        let lookStartX = 0;
+        let lookStartY = 0;
+        let lookX = 0;
+        let lookY = 0;
+        
+        canvas.addEventListener('mousedown', handleLookStart);
+        canvas.addEventListener('mousemove', handleLookMove);
+        canvas.addEventListener('mouseup', handleLookEnd);
+        canvas.addEventListener('touchstart', handleLookStart);
+        canvas.addEventListener('touchmove', handleLookMove);
+        canvas.addEventListener('touchend', handleLookEnd);
+        
+        function handleLookStart(e) {
+            // Check if touch is in controls area
+            const controlsArea = document.getElementById('controls-area');
+            const rect = controlsArea.getBoundingClientRect();
+            
+            let clientY;
+            if (e.type === 'touchstart') {
+                if (e.touches.length > 1) return;
+                clientY = e.touches[0].clientY;
+            } else {
+                if (e.button !== 0) return;
+                clientY = e.clientY;
+            }
+            
+            // If touch is in controls area, ignore it
+            if (clientY > rect.top) return;
+            
+            e.preventDefault();
+            lookActive = true;
+            
+            if (e.type === 'touchstart') {
+                lookStartX = e.touches[0].clientX;
+                lookStartY = e.touches[0].clientY;
+            } else {
+                lookStartX = e.clientX;
+                lookStartY = e.clientY;
+            }
+        }
+        
+        function handleLookMove(e) {
+            if (!lookActive) return;
+            e.preventDefault();
+            
+            let clientX, clientY;
+            
+            if (e.type === 'touchmove') {
+                if (e.touches.length > 1) return;
+                clientX = e.touches[0].clientX;
+                clientY = e.touches[0].clientY;
+            } else {
+                clientX = e.clientX;
+                clientY = e.clientY;
+            }
+            
+            lookX = clientX - lookStartX;
+            lookY = clientY - lookStartY;
+            
+            lookStartX = clientX;
+            lookStartY = clientY;
+        }
+        
+        function handleLookEnd(e) {
+            lookActive = false;
+            lookX = 0;
+            lookY = 0;
+        }
+        
+        // Chat system
+        const chatInput = document.getElementById('chat-input');
+        const sendButton = document.getElementById('send-button');
+        
+        sendButton.addEventListener('click', sendMessage);
+        chatInput.addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                sendMessage();
+            }
+        });
+        
+        function sendMessage() {
+            const message = chatInput.value.trim();
+            if (message) {
+                playerMessage = message;
+                chatInput.value = '';
+                updatePlayerData();
+                
+                // Show message locally immediately
+                localPlayer.messageBubble.textContent = message;
+                localPlayer.messageBubble.style.display = 'block';
+                
+                // Clear message after 5 seconds
+                if (localPlayer.messageTimeout) {
+                    clearTimeout(localPlayer.messageTimeout);
+                }
+                localPlayer.messageTimeout = setTimeout(() => {
+                    playerMessage = '';
+                    localPlayer.messageBubble.textContent = '';
+                    localPlayer.messageBubble.style.display = 'none';
+                    updatePlayerData();
+                }, 5000);
+            }
+        }
+        
+        // Save player data to server
+        function updatePlayerData() {
+            const data = {
+                id: playerId,
+                nickname: playerNickname,
+                position: playerPosition,
+                rotation: playerRotation,
+                message: playerMessage,
+                timestamp: Date.now()
+            };
+            
+            fetch('save.php', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(data)
+            })
+            .catch(error => console.error('Error saving player data:', error));
+        }
+        
+        // Get players data from server
+        function fetchPlayersData() {
+            return fetch('get.php')
+                .then(response => response.json())
+                .catch(error => {
+                    console.error('Error fetching players data:', error);
+                    return {};
+                });
+        }
+        
+        // Update other players in the scene
+        function updateOtherPlayers(playersData) {
+            // Remove players that are no longer present
+            for (const id in otherPlayers) {
+                if (!playersData[id] || playersData[id].timestamp < lastUpdateTime) {
+                    scene.remove(otherPlayers[id].group);
+                    document.body.removeChild(otherPlayers[id].nameLabel);
+                    document.body.removeChild(otherPlayers[id].messageBubble);
+                    if (otherPlayers[id].messageTimeout) {
+                        clearTimeout(otherPlayers[id].messageTimeout);
+                    }
+                    delete otherPlayers[id];
+                }
+            }
+            
+            // Add or update players
+            for (const id in playersData) {
+                if (id === playerId) continue;
+                
+                const playerData = playersData[id];
+                
+                if (!otherPlayers[id]) {
+                    otherPlayers[id] = createPlayerCharacter(id, playerData.nickname);
+                    scene.add(otherPlayers[id].group);
+                } else {
+                    // Update nickname if changed
+                    if (playerData.nickname && otherPlayers[id].nickname !== playerData.nickname) {
+                        otherPlayers[id].nickname = playerData.nickname;
+                        otherPlayers[id].nameLabel.textContent = playerData.nickname;
+                    }
+                }
+                
+                const playerObj = otherPlayers[id];
+                
+                playerObj.group.position.set(
+                    playerData.position.x,
+                    playerData.position.y,
+                    playerData.position.z
+                );
+                playerObj.group.rotation.y = playerData.rotation.y;
+                
+                // Update message
+                if (playerData.message && playerData.message !== playerObj.currentMessage) {
+                    playerObj.messageBubble.textContent = playerData.message;
+                    playerObj.currentMessage = playerData.message;
+                    
+                    // Clear message after 5 seconds
+                    if (playerObj.messageTimeout) {
+                        clearTimeout(playerObj.messageTimeout);
+                    }
+                    playerObj.messageTimeout = setTimeout(() => {
+                        playerObj.messageBubble.textContent = '';
+                        playerObj.currentMessage = '';
+                    }, 5000);
+                }
+                
+                // Update labels and messages
+                updatePlayerLabels(playerObj);
+            }
+        }
+        
+        // Update player labels and messages position
+        function updatePlayerLabels(playerObj) {
+            const playerHeadPos = new THREE.Vector3(0, 0.9, 0);
+            playerHeadPos.applyMatrix4(playerObj.group.matrixWorld);
+            
+            const screenPosition = playerHeadPos.clone().project(camera);
+            
+            const x = (screenPosition.x * 0.5 + 0.5) * window.innerWidth;
+            const y = (screenPosition.y * -0.5 + 0.5) * window.innerHeight;
+            
+            // Only show if player is in front of camera
+            if (screenPosition.z > 0 && screenPosition.z < 1) {
+                playerObj.nameLabel.style.display = 'block';
+                playerObj.nameLabel.style.left = x + 'px';
+                playerObj.nameLabel.style.top = y + 'px';
+                
+                if (playerObj.currentMessage) {
+                    playerObj.messageBubble.style.display = 'block';
+                    playerObj.messageBubble.style.left = x + 'px';
+                    playerObj.messageBubble.style.top = (y - 30) + 'px';
+                } else {
+                    playerObj.messageBubble.style.display = 'none';
+                }
+            } else {
+                playerObj.nameLabel.style.display = 'none';
+                playerObj.messageBubble.style.display = 'none';
+            }
+        }
+        
+        // Animation loop
+        function animate() {
+            requestAnimationFrame(animate);
+            
+            // Movement controls - REVERSED ALL DIRECTIONS
+            const moveSpeed = 0.05;
+            const moveX = -joystickX / 30 * moveSpeed; // Reversed X
+            const moveZ = -joystickY / 30 * moveSpeed; // Reversed Y
+            
+            // Rotate movement vector based on camera rotation
+            const angle = camera.rotation.y;
+            const rotatedX = moveX * Math.cos(angle) - moveZ * Math.sin(angle);
+            const rotatedZ = moveX * Math.sin(angle) + moveZ * Math.cos(angle);
+            
+            // Update player position
+            playerPosition.x += rotatedX;
+            playerPosition.z += rotatedZ;
+            
+            // Simple collision detection with walls
+            const wallDistance = 18;
+            playerPosition.x = Math.max(-wallDistance, Math.min(wallDistance, playerPosition.x));
+            playerPosition.z = Math.max(-wallDistance, Math.min(wallDistance, playerPosition.z));
+            
+            // Update local player position and rotation
+            localPlayer.group.position.set(playerPosition.x, playerPosition.y, playerPosition.z);
+            
+            // Camera controls
+            const lookSpeed = 0.002;
+            if (lookActive) {
+                playerRotation.y -= lookX * lookSpeed;
+                
+                // Vertical rotation with limits (-60 to +60 degrees)
+                const verticalLimit = Math.PI / 3; // 60 degrees in radians
+                playerRotation.x = Math.max(-verticalLimit, Math.min(verticalLimit, playerRotation.x - lookY * lookSpeed));
+                
+                lookX = 0;
+                lookY = 0;
+            }
+            
+            // Update camera based on view mode
+            switch(currentViewMode) {
+                case VIEW_MODES.FIRST_PERSON:
+                    // First person view (camera at eye level)
+                    camera.position.set(playerPosition.x, playerPosition.y + 1.6, playerPosition.z);
+                    camera.rotation.set(playerRotation.x, playerRotation.y, 0);
+                    localPlayer.group.visible = false;
+                    break;
+                    
+                case VIEW_MODES.THIRD_PERSON:
+                    // Third person view (camera behind player)
+                    const distance = 3;
+                    const cameraOffset = new THREE.Vector3(
+                        0,
+                        1,
+                        distance
+                    );
+                    cameraOffset.applyAxisAngle(new THREE.Vector3(1, 0, 0), playerRotation.x);
+                    cameraOffset.applyAxisAngle(new THREE.Vector3(0, 1, 0), playerRotation.y);
+                    
+                    camera.position.set(
+                        playerPosition.x + cameraOffset.x,
+                        playerPosition.y + cameraOffset.y,
+                        playerPosition.z + cameraOffset.z
+                    );
+                    camera.lookAt(playerPosition.x, playerPosition.y + 1.6, playerPosition.z);
+                    localPlayer.group.visible = true;
+                    break;
+                    
+                case VIEW_MODES.TOP_DOWN:
+                    // Top down view
+                    camera.position.set(playerPosition.x, 10, playerPosition.z);
+                    camera.rotation.x = -Math.PI / 2;
+                    camera.rotation.y = 0;
+                    localPlayer.group.visible = true;
+                    break;
+            }
+            
+            // Update player data periodically
+            const now = Date.now();
+            if (now - lastUpdateTime > 2000) {
+                updatePlayerData();
+                fetchPlayersData().then(playersData => {
+                    updateOtherPlayers(playersData);
+                });
+                lastUpdateTime = now;
+            }
+            
+            // Update labels for all players
+            for (const id in otherPlayers) {
+                updatePlayerLabels(otherPlayers[id]);
+            }
+            updatePlayerLabels(localPlayer);
+            
+            renderer.render(scene, camera);
+        }
+        
+        // Handle window resize
+        window.addEventListener('resize', function() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+        
+        // Initial data update
+        updatePlayerData();
+        
+        // Start animation
+        animate();
+    </script>
+</body>
+</html>
