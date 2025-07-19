@@ -1,5 +1,6 @@
 # 3D Multiplayer Room with ThreeJS
 
+![3D Multiplayer Room Preview](room.jpg)
 
 
 ## Описание проекта
